@@ -1,6 +1,6 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.8.0 (audio-track attempt: reel ke page se alag audio file)
+ * Version 2.8.1 (audio-track DISABLED: har reel ko aik hi ghalat audio de raha tha)
  * Diagnostic ("attempts" field) ke sath, ffprobe fix ke sath, aur aik naye
  * rescue tareeqay ke sath:
  * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
@@ -78,7 +78,7 @@ function setupFfmpegTools() {
 }
 const FFMPEG_LOCATION = setupFfmpegTools();
 
-const VERSION = '2.8.0';
+const VERSION = '2.8.1';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -388,6 +388,9 @@ async function tryExtractPageVideo(reelUrl, id) {
 }
 
 /* ================================================================
+   DISABLED 2026-10-24: ye tareeqa har reel ko aik hi ghalat audio de raha
+   tha (page se uthai hui generic audio file), is liye cascade se hata
+   diya gaya hai. Function maujood hai lekin kabhi call nahi hota.
    Tareeqa: reel ke page se ALAG audio file
    Kuch reels (khaas kar licensed music wali) ka audio video file ka
    hissa nahi hota - Instagram player use alag music track se bajata
@@ -595,7 +598,6 @@ async function handleAudio(req, res) {
     { name: 'yt-dlp-download', run: () => tryExtractYtDlpDownload(reelUrl, id) },
     { name: 'formats', run: () => tryExtractFormats(reelUrl) },
     { name: 'page-video', run: () => tryExtractPageVideo(reelUrl, id) },
-    { name: 'audio-track', run: () => tryExtractAudioTrack(reelUrl, id) },
     { name: 'embed', run: () => tryExtractEmbed(reelUrl, id) },
   ];
 
@@ -624,7 +626,7 @@ async function handleAudio(req, res) {
 
   return res.status(500).json({
     success: false,
-    message: 'Could not extract audio from this link. It may be private, removed, or Instagram is busy right now. Please try another public reel.',
+    message: 'The audio of this video is not available. This reel\'s audio could not be extracted, please try another reel.',
     attempts: attemptErrors,
   });
 }
