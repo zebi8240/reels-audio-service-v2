@@ -1,6 +1,6 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.6.0 (page-video attempt: reel ke asal page se combined link)
+ * Version 2.7.0 (throwaway-account cookies: IG_COOKIES env var)
  * Diagnostic ("attempts" field) ke sath, ffprobe fix ke sath, aur aik naye
  * rescue tareeqay ke sath:
  * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
@@ -42,6 +42,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const crypto = require('crypto');
+const os = require('os');
 const ffmpegPath = require('ffmpeg-static');
 // ffprobe alag package se ata hai (ffmpeg-static me sirf ffmpeg hota hai).
 // Agar package install na ho to null rehta hai aur purana tareeqa chalta hai.
@@ -77,7 +78,7 @@ function setupFfmpegTools() {
 }
 const FFMPEG_LOCATION = setupFfmpegTools();
 
-const VERSION = '2.6.0';
+const VERSION = '2.7.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -91,6 +92,59 @@ const BROWSER_HEADERS = {
   'Accept-Language': 'en-US,en;q=0.9',
   'Referer': 'https://www.instagram.com/',
 };
+
+/* ================================================================
+   Throwaway-account session cookies (IG_COOKIES env var)
+   Render dashboard me IG_COOKIES naam ki env var me aik throwaway
+   Instagram account ki cookies (Netscape cookies.txt format) rakhi
+   jati hai. Ye kabhi repo, chat ya log me nahi aati - sirf env var
+   se parhi jati hai. Cookies hon to:
+     - yt-dlp ko --cookies file milti hai (logged-in request -> Instagram
+       poora format deta hai, audio samet)
+     - page/embed fetch me Cookie header lagta hai
+   Cookies na hon to sab kuch pehle jesa (bina login) chalta hai.
+   Cookie file tmpdir me banti hai (files/ me NAHI, taake wo /files
+   se kabhi download na ho sake) aur sirf process ko parhne ki
+   ijazat hoti hai (0600). /health sirf true/false batata hai,
+   cookie ki value kabhi nahi.
+   ================================================================ */
+function getCookieFile() {
+  const raw = process.env.IG_COOKIES || '';
+  if (!raw.trim()) return null;
+  const p = path.join(os.tmpdir(), 'ig-cookies.txt');
+  try {
+    fs.writeFileSync(p, raw.endsWith('\n') ? raw : raw + '\n', { mode: 0o600 });
+    return p;
+  } catch (e) {
+    console.log('[cookies] write failed:', e.message);
+    return null;
+  }
+}
+function cookieArgs() {
+  const f = getCookieFile();
+  return f ? ['--cookies', f] : [];
+}
+function getCookieHeader() {
+  const raw = process.env.IG_COOKIES || '';
+  const pairs = [];
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const parts = t.split('\t');
+    if (parts.length >= 7 && (parts[5] === 'sessionid' || parts[5] === 'csrftoken')) {
+      pairs.push(parts[5] + '=' + parts[6]);
+    }
+  }
+  if (pairs.length) return pairs.join('; ');
+  if (/sessionid=/.test(raw)) return raw.replace(/\s*\n\s*/g, '; ').trim();
+  return null;
+}
+function requestHeaders() {
+  const h = { ...BROWSER_HEADERS };
+  const cookie = getCookieHeader();
+  if (cookie) h.Cookie = cookie;
+  return h;
+}
 
 fs.mkdirSync(FILES_DIR, { recursive: true });
 
@@ -120,7 +174,7 @@ app.use('/api/', (req, res, next) => {
 app.get('/health', (req, res) => {
   let ffmpegTools = [];
   try { ffmpegTools = fs.readdirSync(FFMPEG_TOOLS_DIR); } catch (e) { ffmpegTools = []; }
-  res.json({ ok: true, service: 'reels-audio-service-v2', version: VERSION, ytdlp: fs.existsSync(YTDLP), ffmpegTools, ffprobe: ffmpegTools.includes('ffprobe') });
+  res.json({ ok: true, service: 'reels-audio-service-v2', version: VERSION, ytdlp: fs.existsSync(YTDLP), ffmpegTools, ffprobe: ffmpegTools.includes('ffprobe'), cookiesConfigured: !!(process.env.IG_COOKIES || '').trim() });
 });
 
 // ---- Instagram URL helpers ----
@@ -163,7 +217,7 @@ function tryExtractYtDlp(reelUrl, id, extraArgs) {
       '--socket-timeout', '30',
       '--retries', '3',
       '--print-json',            // title / author / thumbnail isi se milte hain
-    ].concat(extraArgs, ['-o', outTemplate, reelUrl]);
+    ].concat(cookieArgs(), extraArgs, ['-o', outTemplate, reelUrl]);
 
     const child = spawn(YTDLP, args, { timeout: 180000 });
     let out = '';
@@ -202,6 +256,7 @@ function tryExtractYtDlpDownload(reelUrl, id) {
       '--socket-timeout', '30',
       '--retries', '3',
       '--print-json',
+      ...cookieArgs(),
       '-o', outTemplate, reelUrl,
     ];
     const child = spawn(YTDLP, args, { timeout: 180000 });
@@ -269,7 +324,7 @@ function probeStreams(filePath) {
    ================================================================ */
 function tryExtractFormats(reelUrl) {
   return new Promise((resolve, reject) => {
-    const child = spawn(YTDLP, ['-J', '--no-playlist', '--socket-timeout', '30', reelUrl], { timeout: 90000 });
+    const child = spawn(YTDLP, ['-J', '--no-playlist', '--socket-timeout', '30', ...cookieArgs(), reelUrl], { timeout: 90000 });
     let out = '';
     let errOut = '';
     child.stdout.on('data', (d) => { out += d.toString(); });
@@ -341,7 +396,7 @@ async function tryExtractPageVideo(reelUrl, id) {
 function fetchText(url, redirectsLeft) {
   if (redirectsLeft === undefined) redirectsLeft = 5;
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: BROWSER_HEADERS, timeout: 30000 }, (resp) => {
+    https.get(url, { headers: requestHeaders(), timeout: 30000 }, (resp) => {
       if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location && redirectsLeft > 0) {
         resp.resume();
         return fetchText(resp.headers.location, redirectsLeft - 1).then(resolve, reject);
@@ -360,7 +415,7 @@ function fetchText(url, redirectsLeft) {
 function downloadFile(url, dest, redirectsLeft) {
   if (redirectsLeft === undefined) redirectsLeft = 5;
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: BROWSER_HEADERS, timeout: 120000 }, (resp) => {
+    https.get(url, { headers: requestHeaders(), timeout: 120000 }, (resp) => {
       if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location && redirectsLeft > 0) {
         resp.resume();
         return downloadFile(resp.headers.location, dest, redirectsLeft - 1).then(resolve, reject);
