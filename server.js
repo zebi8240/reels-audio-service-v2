@@ -1,6 +1,6 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.4.0
+ * Version 2.5.0 (diagnostic: formats probe + downloaded file streams)
  * Diagnostic ("attempts" field) ke sath, ffprobe fix ke sath, aur aik naye
  * rescue tareeqay ke sath:
  * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
@@ -77,7 +77,7 @@ function setupFfmpegTools() {
 }
 const FFMPEG_LOCATION = setupFfmpegTools();
 
-const VERSION = '2.4.0';
+const VERSION = '2.5.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -223,13 +223,68 @@ function tryExtractYtDlpDownload(reelUrl, id) {
           fs.unlink(srcPath, () => {});
           return resolve({ file: mp3Name, info });
         } catch (e) {
+          let probe = '';
+          try { probe = await probeStreams(srcPath); } catch (pe) { probe = 'probe error: ' + pe.message; }
+          let size = 0;
+          try { size = fs.statSync(srcPath).size; } catch (se) {}
           fs.unlink(srcPath, () => {});
-          return reject(new Error('yt-dlp-download convert failed: ' + e.message));
+          return reject(new Error('yt-dlp-download convert failed: ' + e.message + ' | file=' + downloaded[0] + ' size=' + size + ' streams=' + probe));
         }
       }
       const tail = errOut.replace(/\s+/g, ' ').trim().slice(-200);
       console.error('[yt-dlp-download] attempt failed, code', code, tail);
       reject(new Error('yt-dlp-download code ' + code + (tail ? ': ' + tail : '')));
+    });
+  });
+}
+
+/* ================================================================
+   Diagnostic: download ki hui file me kaun si streams hain (ffprobe se).
+   Agar file me audio stream hi nahi, to koi converter MP3 nahi bana sakta
+   aur yehi wajah attempts me likhi jati hai.
+   ================================================================ */
+function probeStreams(filePath) {
+  return new Promise((resolve) => {
+    let ffprobeBin = ffprobePath;
+    try {
+      const toolsProbe = path.join(FFMPEG_TOOLS_DIR, 'ffprobe');
+      if (fs.existsSync(toolsProbe)) ffprobeBin = toolsProbe;
+    } catch (e) {}
+    if (!ffprobeBin) return resolve('no ffprobe binary');
+    execFile(ffprobeBin, ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'json', filePath], { timeout: 30000 }, (err, stdout) => {
+      if (err) return resolve('ffprobe error: ' + String(err.message).slice(0, 200));
+      try {
+        const j = JSON.parse(stdout);
+        const streams = (j.streams || []).map((s) => (s.codec_type || '?') + ':' + (s.codec_name || '?')).join(',');
+        resolve(streams || 'no streams');
+      } catch (e) { resolve('ffprobe unparseable output'); }
+    });
+  });
+}
+
+/* ================================================================
+   Diagnostic: reel ke liye yt-dlp ko kaun se format nazar ate hain.
+   Ye attempt hamesha "fail" hota hai taake is ki maloomat attempts me
+   likhi jaye - ye sirf tab chalta hai jab pehle tareeqay fail ho jayen.
+   ================================================================ */
+function tryExtractFormats(reelUrl) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(YTDLP, ['-J', '--no-playlist', '--socket-timeout', '30', reelUrl], { timeout: 90000 });
+    let out = '';
+    let errOut = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { errOut += d.toString(); });
+    child.on('error', (e) => reject(new Error('spawn: ' + e.message)));
+    child.on('close', (code) => {
+      if (code === 0 && out.trim()) {
+        try {
+          const info = JSON.parse(out);
+          const fmts = (info.formats || []).map((f) => (f.format_id || '?') + ':' + (f.ext || '?') + ':a=' + (f.acodec || '?') + ':v=' + (f.vcodec || '?')).join(' | ');
+          return reject(new Error('formats: title=' + (info.title || '') + ' | ' + (fmts || 'no formats listed').slice(0, 600)));
+        } catch (e) { return reject(new Error('formats: unparseable info json')); }
+      }
+      const tail = errOut.replace(/\s+/g, ' ').trim().slice(-200);
+      reject(new Error('formats failed code ' + code + (tail ? ': ' + tail : '')));
     });
   });
 }
@@ -380,6 +435,7 @@ async function handleAudio(req, res) {
     { name: 'yt-dlp-bestaudio', run: () => tryExtractYtDlp(reelUrl, id, ['-f', 'bestaudio/best']) },
     { name: 'yt-dlp-impersonate', run: () => tryExtractYtDlp(reelUrl, id, ['--impersonate', 'chrome']) },
     { name: 'yt-dlp-download', run: () => tryExtractYtDlpDownload(reelUrl, id) },
+    { name: 'formats', run: () => tryExtractFormats(reelUrl) },
     { name: 'embed', run: () => tryExtractEmbed(reelUrl, id) },
   ];
 
