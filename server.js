@@ -1,9 +1,13 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.2.0 (diagnostic build)
- * Fail hone par API jawab me har attempt ki wajah bhi ati hai ("attempts"
- * field) taake ye pata chal sake ke kis darwaze pe kya rukawat ayi. Ye sirf
- * test service ke liye hai - koi secret ya password is me nahi ata.
+ * Version 2.3.0
+ * Diagnostic ("attempts" field) ke sath, aur ffprobe fix ke sath:
+ * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
+ * (audio codec maloom karne ke liye). Sirf ffmpeg-static hone se kuch reels
+ * "unable to obtain file audio codec with ffprobe" keh ke fail ho jati thin
+ * jabke video download ho chuka hota tha. Is liye ab ffprobe-static bhi
+ * install hota hai aur dono binary aik hi folder (ffmpeg-tools/) me rakh ke
+ * wo folder yt-dlp ko diya jata hai.
  *
  * Free Instagram Reels -> MP3 microservice. Is build me koi paid API nahi hai.
  *
@@ -33,8 +37,41 @@ const path = require('path');
 const https = require('https');
 const crypto = require('crypto');
 const ffmpegPath = require('ffmpeg-static');
+// ffprobe alag package se ata hai (ffmpeg-static me sirf ffmpeg hota hai).
+// Agar package install na ho to null rehta hai aur purana tareeqa chalta hai.
+let ffprobePath = null;
+try { ffprobePath = require('ffprobe-static').path; } catch (e) { ffprobePath = null; }
 
-const VERSION = '2.2.0';
+// yt-dlp ko ffmpeg + ffprobe dono aik hi folder me chahiye hote hain.
+// Dono binary ko ffmpeg-tools/ me copy kar ke wo folder diya jata hai.
+const FFMPEG_TOOLS_DIR = path.join(__dirname, 'ffmpeg-tools');
+function setupFfmpegTools() {
+  try {
+    fs.mkdirSync(FFMPEG_TOOLS_DIR, { recursive: true });
+    const pairs = [];
+    if (ffmpegPath) pairs.push([ffmpegPath, 'ffmpeg']);
+    if (ffprobePath) pairs.push([ffprobePath, 'ffprobe']);
+    for (const [src, name] of pairs) {
+      const dest = path.join(FFMPEG_TOOLS_DIR, name);
+      let needCopy = true;
+      try {
+        if (fs.existsSync(dest) && fs.statSync(dest).size === fs.statSync(src).size) needCopy = false;
+      } catch (e) { /* phir copy kar do */ }
+      if (needCopy) {
+        fs.copyFileSync(src, dest);
+        fs.chmodSync(dest, 0o755);
+      }
+    }
+    console.log('[ffmpeg-tools] ready:', fs.readdirSync(FFMPEG_TOOLS_DIR).join(', '));
+    return FFMPEG_TOOLS_DIR;
+  } catch (e) {
+    console.log('[ffmpeg-tools] setup failed, falling back to ffmpeg binary path:', e.message);
+    return ffmpegPath;
+  }
+}
+const FFMPEG_LOCATION = setupFfmpegTools();
+
+const VERSION = '2.3.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -111,7 +148,7 @@ function tryExtractYtDlp(reelUrl, id, extraArgs) {
       '-x',                      // extract audio only
       '--audio-format', 'mp3',
       '--audio-quality', '0',    // best quality
-      '--ffmpeg-location', ffmpegPath,
+      '--ffmpeg-location', FFMPEG_LOCATION,
       '--no-playlist',
       '--socket-timeout', '30',
       '--retries', '3',
