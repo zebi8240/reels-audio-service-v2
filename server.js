@@ -1,6 +1,6 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.8.1 (audio-track DISABLED: har reel ko aik hi ghalat audio de raha tha)
+ * Version 2.9.0 (speed: timeouts kam, diagnostic aakhir me; steps UI ke liye API wahi hai)
  * Diagnostic ("attempts" field) ke sath, ffprobe fix ke sath, aur aik naye
  * rescue tareeqay ke sath:
  * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
@@ -78,7 +78,7 @@ function setupFfmpegTools() {
 }
 const FFMPEG_LOCATION = setupFfmpegTools();
 
-const VERSION = '2.8.1';
+const VERSION = '2.9.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -214,8 +214,8 @@ function tryExtractYtDlp(reelUrl, id, extraArgs) {
       '--audio-quality', '0',    // best quality
       '--ffmpeg-location', FFMPEG_LOCATION,
       '--no-playlist',
-      '--socket-timeout', '30',
-      '--retries', '3',
+      '--socket-timeout', '20',
+      '--retries', '2',
       '--print-json',            // title / author / thumbnail isi se milte hain
     ].concat(cookieArgs(), extraArgs, ['-o', outTemplate, reelUrl]);
 
@@ -253,8 +253,8 @@ function tryExtractYtDlpDownload(reelUrl, id) {
       '-f', 'bestaudio/best',
       '--ffmpeg-location', FFMPEG_LOCATION,
       '--no-playlist',
-      '--socket-timeout', '30',
-      '--retries', '3',
+      '--socket-timeout', '20',
+      '--retries', '2',
       '--print-json',
       ...cookieArgs(),
       '-o', outTemplate, reelUrl,
@@ -324,7 +324,7 @@ function probeStreams(filePath) {
    ================================================================ */
 function tryExtractFormats(reelUrl) {
   return new Promise((resolve, reject) => {
-    const child = spawn(YTDLP, ['-J', '--no-playlist', '--socket-timeout', '30', ...cookieArgs(), reelUrl], { timeout: 90000 });
+    const child = spawn(YTDLP, ['-J', '--no-playlist', '--socket-timeout', '20', ...cookieArgs(), reelUrl], { timeout: 90000 });
     let out = '';
     let errOut = '';
     child.stdout.on('data', (d) => { out += d.toString(); });
@@ -596,9 +596,11 @@ async function handleAudio(req, res) {
     { name: 'yt-dlp-bestaudio', run: () => tryExtractYtDlp(reelUrl, id, ['-f', 'bestaudio/best']) },
     { name: 'yt-dlp-impersonate', run: () => tryExtractYtDlp(reelUrl, id, ['--impersonate', 'chrome']) },
     { name: 'yt-dlp-download', run: () => tryExtractYtDlpDownload(reelUrl, id) },
-    { name: 'formats', run: () => tryExtractFormats(reelUrl) },
     { name: 'page-video', run: () => tryExtractPageVideo(reelUrl, id) },
     { name: 'embed', run: () => tryExtractEmbed(reelUrl, id) },
+    // diagnostic sirf: aakhir me, taake asal tareeqay pehle chalen aur
+    // page-video/embed ki kamyabi pe ye extra call bache
+    { name: 'formats', run: () => tryExtractFormats(reelUrl) },
   ];
 
   const attemptErrors = [];
