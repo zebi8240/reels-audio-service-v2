@@ -1,6 +1,9 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.1.0
+ * Version 2.2.0 (diagnostic build)
+ * Fail hone par API jawab me har attempt ki wajah bhi ati hai ("attempts"
+ * field) taake ye pata chal sake ke kis darwaze pe kya rukawat ayi. Ye sirf
+ * test service ke liye hai - koi secret ya password is me nahi ata.
  *
  * Free Instagram Reels -> MP3 microservice. Is build me koi paid API nahi hai.
  *
@@ -31,7 +34,7 @@ const https = require('https');
 const crypto = require('crypto');
 const ffmpegPath = require('ffmpeg-static');
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -128,8 +131,9 @@ function tryExtractYtDlp(reelUrl, id, extraArgs) {
         try { info = JSON.parse(out.trim().split('\n').pop()); } catch (e) { /* info na mile to khali chalega */ }
         return resolve({ file: files[0], info });
       }
-      console.error('[yt-dlp] attempt failed, code', code, errOut.slice(-300));
-      reject(new Error('yt-dlp failed with code ' + code));
+      const tail = errOut.replace(/\s+/g, ' ').trim().slice(-200);
+      console.error('[yt-dlp] attempt failed, code', code, tail);
+      reject(new Error('yt-dlp code ' + code + (tail ? ': ' + tail : '')));
     });
   });
 }
@@ -282,6 +286,7 @@ async function handleAudio(req, res) {
     { name: 'embed', run: () => tryExtractEmbed(reelUrl, id) },
   ];
 
+  const attemptErrors = [];
   for (let i = 0; i < attempts.length; i++) {
     try {
       const { file, info } = await attempts[i].run();
@@ -299,6 +304,7 @@ async function handleAudio(req, res) {
       });
     } catch (e) {
       console.error('[audio] attempt', attempts[i].name, 'failed:', e.message);
+      attemptErrors.push({ attempt: attempts[i].name, error: String(e.message).slice(0, 300) });
       cleanupPartial(id);
     }
   }
@@ -306,6 +312,7 @@ async function handleAudio(req, res) {
   return res.status(500).json({
     success: false,
     message: 'Could not extract audio from this link. It may be private, removed, or Instagram is busy right now. Please try another public reel.',
+    attempts: attemptErrors,
   });
 }
 app.get('/api/audio', handleAudio);
