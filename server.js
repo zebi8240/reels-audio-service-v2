@@ -1,6 +1,6 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.5.0 (diagnostic: formats probe + downloaded file streams)
+ * Version 2.6.0 (page-video attempt: reel ke asal page se combined link)
  * Diagnostic ("attempts" field) ke sath, ffprobe fix ke sath, aur aik naye
  * rescue tareeqay ke sath:
  * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
@@ -77,7 +77,7 @@ function setupFfmpegTools() {
 }
 const FFMPEG_LOCATION = setupFfmpegTools();
 
-const VERSION = '2.5.0';
+const VERSION = '2.6.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -290,6 +290,49 @@ function tryExtractFormats(reelUrl) {
 }
 
 /* ================================================================
+   Tareeqa: reel ke asal page se combined video link
+   yt-dlp ko Render se sirf video-only DASH format milte hain, lekin reel
+   ke asal page ke HTML me aksar aik hi combined video link hota hai
+   (video + audio wali aik MP4 file). Embed page se ye link nahi mila
+   tha, is liye asal page aur /p/ page dono try hote hain. Mil jaye to
+   use download kar ke ffmpeg se MP3 banta hai (is me ffprobe nahi
+   chahiye). Na mile to ye tareeqa saaf wajah ke sath fail ho jata hai.
+   ================================================================ */
+async function tryExtractPageVideo(reelUrl, id) {
+  const code = getShortcode(reelUrl);
+  if (!code) throw new Error('page-video: no shortcode in url');
+  let html = null;
+  let lastErr = null;
+  for (const pageUrl of [`https://www.instagram.com/reel/${code}/`, `https://www.instagram.com/p/${code}/`]) {
+    try {
+      html = await fetchText(pageUrl);
+      if (findVideoUrl(html)) break;
+    } catch (e) { lastErr = e; }
+  }
+  if (!html) throw lastErr || new Error('page-video: page not fetched');
+  const videoUrl = findVideoUrl(html);
+  if (!videoUrl) throw new Error('page-video: no video url found');
+  const mp4Path = path.join(FILES_DIR, `${id}-page.mp4`);
+  const mp3Name = `${id}.mp3`;
+  const mp3Path = path.join(FILES_DIR, mp3Name);
+  await downloadFile(videoUrl, mp4Path);
+  try {
+    await convertToMp3(mp4Path, mp3Path);
+  } finally {
+    fs.unlink(mp4Path, () => {});
+  }
+  return {
+    file: mp3Name,
+    info: {
+      title: findMeta(html, 'og:title'),
+      uploader: '',
+      thumbnail: findMeta(html, 'og:image'),
+      duration: null,
+    },
+  };
+}
+
+/* ================================================================
    Tareeqa 5: Instagram embed page
    Public reel ka embed page (instagram.com/reel/<id>/embed) aksar us
    waqt bhi video ka seedha link deta hai jab aam extractor roka jaye.
@@ -436,6 +479,7 @@ async function handleAudio(req, res) {
     { name: 'yt-dlp-impersonate', run: () => tryExtractYtDlp(reelUrl, id, ['--impersonate', 'chrome']) },
     { name: 'yt-dlp-download', run: () => tryExtractYtDlpDownload(reelUrl, id) },
     { name: 'formats', run: () => tryExtractFormats(reelUrl) },
+    { name: 'page-video', run: () => tryExtractPageVideo(reelUrl, id) },
     { name: 'embed', run: () => tryExtractEmbed(reelUrl, id) },
   ];
 
