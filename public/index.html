@@ -19,6 +19,14 @@
   .hint{color:#6b7280;font-size:13px;text-align:center;margin:12px 0 0}
   #result{margin-top:18px}
   .loading{text-align:center;color:#6b7280;font-weight:600;padding:10px}
+  .steps{margin-top:18px;display:flex;flex-direction:column;gap:10px}
+  .step{display:flex;gap:10px;align-items:center;color:#9ca3af;font-weight:600;font-size:14px}
+  .step .dot{width:10px;height:10px;border-radius:50%;background:#e5e7eb;flex:none}
+  .step.on{color:#161823}
+  .step.on .dot{background:#e1306c;box-shadow:0 0 0 4px #fde7ef}
+  .step.done{color:#16a34a}
+  .step.done .dot{background:#16a34a}
+  .steps-note{color:#6b7280;font-size:13px;text-align:center;margin:12px 0 0}
   .error{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:14px 16px;border-radius:12px;font-weight:600}
   .media{display:flex;gap:18px;align-items:flex-start}
   .media img{width:120px;height:160px;object-fit:cover;border-radius:12px;background:#f7f7fb}
@@ -53,10 +61,16 @@
     var link=input.value.trim();
     if(!link){err('Please paste an Instagram reel link first.');input.focus();return;}
     btn.disabled=true;btn.textContent='Processing...';
-    out.innerHTML='<div class="loading">Extracting audio, please wait... (the first request may take a little longer while the server wakes up)</div>';
+    out.innerHTML='<div class="steps"><div class="step on" id="st1"><span class="dot"></span><span>Processing your link...</span></div><div class="step" id="st2"><span class="dot"></span><span>Finding the audio...</span></div><div class="step" id="st3"><span class="dot"></span><span>Audio found, creating your MP3...</span></div></div><p class="steps-note">The first request may take a little longer while the server wakes up.</p>';
+    var timers=[];
+    function setStep(n){for(var i=1;i<=3;i++){var el=document.getElementById('st'+i);if(!el)continue;el.classList.remove('on');if(i<n)el.classList.add('done');}var cur=document.getElementById('st'+n);if(cur)cur.classList.add('on');}
+    timers.push(setTimeout(function(){setStep(2);},4000));
+    timers.push(setTimeout(function(){setStep(3);},12000));
+    function clearTimers(){timers.forEach(function(t){clearTimeout(t);});}
     try{
       var res=await fetch('/api/audio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:link})});
       var data=await res.json();
+      clearTimers();
       if(!data.success){err(data.message||'Something went wrong. Please try again.');}
       else{
         var html='<div class="media">';
@@ -68,7 +82,7 @@
         out.innerHTML=html;
         document.getElementById('again').addEventListener('click',function(){input.value='';out.innerHTML='';input.focus();});
       }
-    }catch(e){err('Something went wrong. Please try again.');}
+    }catch(e){clearTimers();err('Something went wrong. Please try again.');}
     btn.disabled=false;btn.textContent='Get Audio';
   }
   btn.addEventListener('click',run);
