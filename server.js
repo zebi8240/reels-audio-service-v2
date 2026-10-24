@@ -1,6 +1,6 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.7.0 (throwaway-account cookies: IG_COOKIES env var)
+ * Version 2.8.0 (audio-track attempt: reel ke page se alag audio file)
  * Diagnostic ("attempts" field) ke sath, ffprobe fix ke sath, aur aik naye
  * rescue tareeqay ke sath:
  * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
@@ -78,7 +78,7 @@ function setupFfmpegTools() {
 }
 const FFMPEG_LOCATION = setupFfmpegTools();
 
-const VERSION = '2.7.0';
+const VERSION = '2.8.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -388,6 +388,66 @@ async function tryExtractPageVideo(reelUrl, id) {
 }
 
 /* ================================================================
+   Tareeqa: reel ke page se ALAG audio file
+   Kuch reels (khaas kar licensed music wali) ka audio video file ka
+   hissa nahi hota - Instagram player use alag music track se bajata
+   hai. Is liye video file hamesha video-only milti hai, chahe login
+   ho ya na ho. Ye tareeqa reel ke page ke HTML me alag audio file
+   (.m4a/.mp3 link) dhoondta hai aur use seedha MP3 banata hai -
+   video file ko chhoo ke bhi nahi. Na mile to error me page ki
+   lambai, login-wall ka ishara aur candidate count likha jata hai
+   taake agla faisla saboot se ho.
+   ================================================================ */
+async function tryExtractAudioTrack(reelUrl, id) {
+  const code = getShortcode(reelUrl);
+  if (!code) throw new Error('audio-track: no shortcode in url');
+  let html = null;
+  let lastErr = null;
+  for (const pageUrl of [`https://www.instagram.com/reel/${code}/`, `https://www.instagram.com/reel/${code}/embed/captioned/`]) {
+    try {
+      html = await fetchText(pageUrl);
+      if (html && html.length > 1000) break;
+    } catch (e) { lastErr = e; }
+  }
+  if (!html) throw lastErr || new Error('audio-track: page not fetched');
+  const loginWall = /loginForm|Log in to Instagram|"is_logged_in":false/i.test(html);
+  const candidates = [];
+  const seen = new Set();
+  const rawMatches = html.match(/https?:[^"'\s]+?\.(?:m4a|mp3)[^"'\s]*/g) || [];
+  for (const raw of rawMatches) {
+    let u = raw;
+    try { u = unescapeJsonString(raw); } catch (e) { /* seedha text hi sahi */ }
+    u = decodeEntities(u).replace(/\\\//g, '/');
+    if (/^https?:\/\//i.test(u) && !seen.has(u)) { seen.add(u); candidates.push(u); }
+  }
+  if (!candidates.length) {
+    throw new Error(`audio-track: no audio url found | page=${html.length} chars loginWall=${loginWall}`);
+  }
+  const tmpPath = path.join(FILES_DIR, `${id}-track.tmp`);
+  const mp3Name = `${id}.mp3`;
+  const mp3Path = path.join(FILES_DIR, mp3Name);
+  await downloadFile(candidates[0], tmpPath);
+  try {
+    const streams = await probeStreams(tmpPath);
+    if (!/audio:/.test(streams)) {
+      throw new Error('audio-track: candidate has no audio stream (' + streams + ') | candidates=' + candidates.length);
+    }
+    await convertToMp3(tmpPath, mp3Path);
+  } finally {
+    fs.unlink(tmpPath, () => {});
+  }
+  return {
+    file: mp3Name,
+    info: {
+      title: findMeta(html, 'og:title'),
+      uploader: '',
+      thumbnail: findMeta(html, 'og:image'),
+      duration: null,
+    },
+  };
+}
+
+/* ================================================================
    Tareeqa 5: Instagram embed page
    Public reel ka embed page (instagram.com/reel/<id>/embed) aksar us
    waqt bhi video ka seedha link deta hai jab aam extractor roka jaye.
@@ -535,6 +595,7 @@ async function handleAudio(req, res) {
     { name: 'yt-dlp-download', run: () => tryExtractYtDlpDownload(reelUrl, id) },
     { name: 'formats', run: () => tryExtractFormats(reelUrl) },
     { name: 'page-video', run: () => tryExtractPageVideo(reelUrl, id) },
+    { name: 'audio-track', run: () => tryExtractAudioTrack(reelUrl, id) },
     { name: 'embed', run: () => tryExtractEmbed(reelUrl, id) },
   ];
 
