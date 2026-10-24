@@ -1,13 +1,19 @@
 /**
  * reels-audio-service-v2  (SCRATCH BUILD - bilkul naya, purani service se alag)
- * Version 2.3.0
- * Diagnostic ("attempts" field) ke sath, aur ffprobe fix ke sath:
+ * Version 2.4.0
+ * Diagnostic ("attempts" field) ke sath, ffprobe fix ke sath, aur aik naye
+ * rescue tareeqay ke sath:
  * yt-dlp ko MP3 banate waqt ffmpeg ke SATH ffprobe bhi chahiye hota hai
  * (audio codec maloom karne ke liye). Sirf ffmpeg-static hone se kuch reels
  * "unable to obtain file audio codec with ffprobe" keh ke fail ho jati thin
  * jabke video download ho chuka hota tha. Is liye ab ffprobe-static bhi
  * install hota hai aur dono binary aik hi folder (ffmpeg-tools/) me rakh ke
- * wo folder yt-dlp ko diya jata hai.
+ * wo folder yt-dlp ko diya jata hai. Phir bhi agar yt-dlp ki MP3 wali
+ * postprocessing fail ho, to naya tareeqa 4 file ko seedha download kar ke
+ * ffmpeg se khud MP3 banata hai (is me ffprobe ki zaroorat hi nahi) -
+ * kyun ke download to kamyab ho raha tha, sirf MP3 banane wala qadam
+ * atak raha tha. /health me ab ffmpeg-tools ki mojoodgi bhi nazar ati
+ * hai taake Render pe ffprobe hai ya nahi, ye andaza na lagana pare.
  *
  * Free Instagram Reels -> MP3 microservice. Is build me koi paid API nahi hai.
  *
@@ -71,7 +77,7 @@ function setupFfmpegTools() {
 }
 const FFMPEG_LOCATION = setupFfmpegTools();
 
-const VERSION = '2.3.0';
+const VERSION = '2.4.0';
 const app = express();
 app.set('trust proxy', 1); // Render proxy ke peeche https pehchanne ke liye
 const PORT = process.env.PORT || 3000;
@@ -111,7 +117,11 @@ app.use('/api/', (req, res, next) => {
   next();
 });
 
-app.get('/health', (req, res) => res.json({ ok: true, service: 'reels-audio-service-v2', version: VERSION, ytdlp: fs.existsSync(YTDLP) }));
+app.get('/health', (req, res) => {
+  let ffmpegTools = [];
+  try { ffmpegTools = fs.readdirSync(FFMPEG_TOOLS_DIR); } catch (e) { ffmpegTools = []; }
+  res.json({ ok: true, service: 'reels-audio-service-v2', version: VERSION, ytdlp: fs.existsSync(YTDLP), ffmpegTools, ffprobe: ffmpegTools.includes('ffprobe') });
+});
 
 // ---- Instagram URL helpers ----
 function isInstagramUrl(u) {
@@ -176,7 +186,56 @@ function tryExtractYtDlp(reelUrl, id, extraArgs) {
 }
 
 /* ================================================================
-   Tareeqa 4: Instagram embed page
+   Tareeqa 4 (naya rescue): yt-dlp se sirf download, MP3 khud ffmpeg se
+   yt-dlp ki MP3 wali postprocessing ffprobe mangti hai; agar wo qadam
+   atak jaye to bhi download kamyab hota hai. Is liye yahan -x bilkul
+   nahi lagaya: file jesi hai wesi download hoti hai, phir seedha ffmpeg
+   usay MP3 bana deta hai (is conversion me ffprobe ki zaroorat nahi).
+   ================================================================ */
+function tryExtractYtDlpDownload(reelUrl, id) {
+  return new Promise((resolve, reject) => {
+    const outTemplate = path.join(FILES_DIR, `${id}-dl.%(ext)s`);
+    const args = [
+      '-f', 'bestaudio/best',
+      '--ffmpeg-location', FFMPEG_LOCATION,
+      '--no-playlist',
+      '--socket-timeout', '30',
+      '--retries', '3',
+      '--print-json',
+      '-o', outTemplate, reelUrl,
+    ];
+    const child = spawn(YTDLP, args, { timeout: 180000 });
+    let out = '';
+    let errOut = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', (d) => { errOut += d.toString(); });
+    child.on('error', (e) => reject(new Error('spawn: ' + e.message)));
+    child.on('close', async (code) => {
+      const downloaded = fs.readdirSync(FILES_DIR).filter((f) => f.startsWith(`${id}-dl.`) && !f.endsWith('.mp3'));
+      if (code === 0 && downloaded.length > 0) {
+        const srcPath = path.join(FILES_DIR, downloaded[0]);
+        const mp3Name = `${id}.mp3`;
+        const mp3Path = path.join(FILES_DIR, mp3Name);
+        try {
+          await convertToMp3(srcPath, mp3Path);
+          let info = {};
+          try { info = JSON.parse(out.trim().split('\n').pop()); } catch (e) { /* info na mile to khali chalega */ }
+          fs.unlink(srcPath, () => {});
+          return resolve({ file: mp3Name, info });
+        } catch (e) {
+          fs.unlink(srcPath, () => {});
+          return reject(new Error('yt-dlp-download convert failed: ' + e.message));
+        }
+      }
+      const tail = errOut.replace(/\s+/g, ' ').trim().slice(-200);
+      console.error('[yt-dlp-download] attempt failed, code', code, tail);
+      reject(new Error('yt-dlp-download code ' + code + (tail ? ': ' + tail : '')));
+    });
+  });
+}
+
+/* ================================================================
+   Tareeqa 5: Instagram embed page
    Public reel ka embed page (instagram.com/reel/<id>/embed) aksar us
    waqt bhi video ka seedha link deta hai jab aam extractor roka jaye.
    Wahan se MP4 la ke ffmpeg se MP3 banta hai.
@@ -320,6 +379,7 @@ async function handleAudio(req, res) {
     { name: 'yt-dlp', run: () => tryExtractYtDlp(reelUrl, id, []) },
     { name: 'yt-dlp-bestaudio', run: () => tryExtractYtDlp(reelUrl, id, ['-f', 'bestaudio/best']) },
     { name: 'yt-dlp-impersonate', run: () => tryExtractYtDlp(reelUrl, id, ['--impersonate', 'chrome']) },
+    { name: 'yt-dlp-download', run: () => tryExtractYtDlpDownload(reelUrl, id) },
     { name: 'embed', run: () => tryExtractEmbed(reelUrl, id) },
   ];
 
